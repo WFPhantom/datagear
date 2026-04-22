@@ -1,0 +1,30 @@
+{
+	"schemaVersion": 1,
+	"id": "datagear",
+	"version": "${version}",
+	"name": "DataGear",
+	"description": "*data grinding noises*",
+	"authors": ["WFPhantom"],
+	"contact": {
+		"homepage": "https://https://modrinth.com/project/datagear",
+		"sources": "https://github.com/WFPhantom/datagear"
+	},
+	"license": "MIT",
+	"icon": "assets/datagear/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			{
+				"value": "com.wfphantom.DataGear",
+				"adapter": "kotlin"
+			}
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.19.2",
+		"minecraft": "~26.1.2",
+		"java": ">=25",
+		"fabric-api": "*",
+		"fabric-language-kotlin": "*"
+	}
+}

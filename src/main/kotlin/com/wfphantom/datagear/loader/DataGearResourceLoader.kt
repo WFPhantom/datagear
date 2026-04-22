@@ -1,0 +1,90 @@
+package com.wfphantom.datagear.loader
+
+import com.google.gson.JsonParser
+import com.wfphantom.datagear.api.GearModifier
+import com.wfphantom.datagear.engine.ModifierEngine
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents
+import net.fabricmc.fabric.api.resource.v1.ResourceLoader
+import net.minecraft.resources.Identifier
+import net.minecraft.server.MinecraftServer
+import net.minecraft.server.packs.PackType
+import net.minecraft.server.packs.resources.ResourceManager
+import net.minecraft.server.packs.resources.ResourceManagerReloadListener
+import com.wfphantom.DataGear
+
+/**
+ * Loads DataGear modifier JSONs from datapacks.
+ *
+ * Directory structure:
+ * - `data/<namespace>/datagear/modify/<target_namespace>/<file>.json` - Modify existing items
+ */
+object DataGearResourceLoader {
+
+    private val logger = DataGear.logger
+    private const val MODIFY_DIR = "datagear/modify"
+
+    fun register() {
+        ResourceLoader.get(PackType.SERVER_DATA).registerReloadListener(Identifier.parse("datagear:resource_loader"), ResourceManagerReloadListener { manager -> reload(manager) })
+
+        ServerLifecycleEvents.SERVER_STARTED.register { server ->
+            logger.info("DataGear: Server started, applying modifiers...")
+            ModifierEngine.applyAll()
+            refreshPlayerInventories(server)
+        }
+
+        ServerLifecycleEvents.END_DATA_PACK_RELOAD.register { server, _, _ ->
+            logger.info("DataGear: Data pack reload complete, applying modifiers...")
+            ModifierEngine.applyAll()
+            refreshPlayerInventories(server)
+        }
+    }
+
+    private fun reload(manager: ResourceManager) {
+        logger.info("DataGear: Reloading datapacks...")
+        ModifierEngine.clear()
+        loadModifiers(manager)
+    }
+
+    /**
+     * Refreshes all online players' inventory stacks so tooltips reflect updated item prototypes.
+     * Existing ItemStacks hold a snapshot of the item's components from creation time,
+     * so after modifying the prototype via bindComponents() we need to rebuild them. (please dont break lmao)
+     */
+    private fun refreshPlayerInventories(server: MinecraftServer) {
+        for (player in server.playerList.players) {
+            val inventory = player.inventory
+            for (i in 0 until inventory.containerSize) {
+                val stack = inventory.getItem(i)
+                if (stack.isEmpty) continue
+                // Create a fresh stack from the (now-modified) item prototype
+                val fresh = stack.item.defaultInstance
+                // Copy over the count
+                fresh.count = stack.count
+                // Re-apply any per-instance patches (enchantments, custom name, damage, etc.)
+                fresh.applyComponents(stack.componentsPatch)
+                inventory.setItem(i, fresh)
+            }
+            // Sync inventory to client
+            player.inventoryMenu.broadcastChanges()
+        }
+        logger.info("DataGear: Refreshed inventories for ${server.playerList.players.size} player(s)")
+    }
+
+    private fun loadModifiers(manager: ResourceManager) {
+        val modifyResources = manager.listResources(MODIFY_DIR) { it.path.endsWith(".json") }
+        val loadedModifiers = mutableListOf<GearModifier>()
+        for ((id, resource) in modifyResources) {
+            try {
+                val json = resource.openAsReader().use { reader -> JsonParser.parseReader(reader).asJsonObject }
+                val modifierPath = id.path.removePrefix("$MODIFY_DIR/").removeSuffix(".json")
+                val modifierId = Identifier.parse("${id.namespace}:$modifierPath")
+                val modifier = GearModifier.fromJson(modifierId, json)
+                loadedModifiers.add(modifier)
+            } catch (e: Exception) {
+                logger.error("DataGear: Failed to load modifier $id", e)
+            }
+        }
+        ModifierEngine.addAll(loadedModifiers)
+        logger.info("DataGear: Loaded ${loadedModifiers.size} modifier(s)")
+    }
+}
