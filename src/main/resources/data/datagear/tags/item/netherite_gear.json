@@ -1,0 +1,8 @@
+{
+  "replace": false,
+  "values": [
+    "#datagear:netherite_armor",
+    "#datagear:netherite_tools",
+    "#datagear:netherite_weapons"
+  ]
+}

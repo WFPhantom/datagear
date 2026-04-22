@@ -1,0 +1,8 @@
+{
+  "replace": false,
+  "values": [
+    "#datagear:diamond_armor",
+    "#datagear:diamond_tools",
+    "#datagear:diamond_weapons"
+  ]
+}
