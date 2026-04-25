@@ -1,8 +1,8 @@
 # DataGear | [![][cf-shield]][cf-link] [![][mr-shield]][mr-link]
 
-**DataGear** is a powerful hot-reloadable Fabric library mod for Minecraft 26.1+ that exposes components, flags, and other modifiers as data. It allows developers to modify them using simple JSON datapack files without writing a single line of code.
+**DataGear** is a powerful hot-reloadable library mod for Minecraft 26.1+ that exposes components, flags, and other modifiers as data. It allows developers to modify them using simple JSON datapack files without writing a single line of code.
 
-**Mod, Datapack and Modpack developers**: Read the [wiki](https://github.com/wfphantom/datagear/wiki) to see how to use DataGear.
+**Mod, Datapack, and Modpack developers**: Read the [wiki](https://github.com/wfphantom/datagear/wiki) to see how to use DataGear.
 
 ## Features
 
@@ -19,7 +19,7 @@ DataGear is meant to be a simple and lightweight solution, and as so it's design
 
 *If you encounter any issues or incompatibilities, please report them [here](https://github.com/wfphantom/datagear/issues).*
 
-Datagear V2 is under development, which means so breaking changes to the API and data structure **WILL** happen. To see my ever-expanding but never-fulfilled TODO list, click [here](https://github.com/WFPhantom/datagear/blob/fabric-26.1/src/main/kotlin/com/wfphantom/DataGear.kt).
+Datagear V2 is under development. To see my ever-expanding but never-fulfilled TODO list, click [here](https://github.com/WFPhantom/datagear/blob/fabric-26.1/src/main/kotlin/com/wfphantom/DataGear.kt).
 
 No backports or Neo ports will be happening until v2 is out, after that, the mod will be available for Neoforge and Fabric 26.1+ and MIGHT be backported to 1.21.1 for both loaders. No Forge or 1.20 ports planned.
 

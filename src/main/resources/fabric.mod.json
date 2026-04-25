@@ -12,10 +12,13 @@
 	"license": "MIT",
 	"icon": "assets/datagear/icon.png",
 	"environment": "*",
+	"mixins": [
+		"datagear.mixins.json"
+	],
 	"entrypoints": {
 		"main": [
 			{
-				"value": "com.wfphantom.DataGear",
+				"value": "com.wfphantom.datagear.DataGear",
 				"adapter": "kotlin"
 			}
 		]

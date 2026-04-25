@@ -35,12 +35,10 @@ fabricApi {
 }
 
 dependencies {
-	// To change the versions see the gradle.properties file
 	minecraft("com.mojang:minecraft:${providers.gradleProperty("minecraft_version").get()}")
 	
 	implementation("net.fabricmc:fabric-loader:${providers.gradleProperty("loader_version").get()}")
 
-	// Fabric API. This is technically optional, but you probably want it anyway.
 	implementation("net.fabricmc.fabric-api:fabric-api:${providers.gradleProperty("fabric_api_version").get()}")
 	implementation("net.fabricmc:fabric-language-kotlin:${providers.gradleProperty("fabric_kotlin_version").get()}")
 }

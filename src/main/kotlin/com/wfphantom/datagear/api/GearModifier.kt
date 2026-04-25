@@ -2,8 +2,9 @@ package com.wfphantom.datagear.api
 
 import com.google.gson.JsonObject
 import net.minecraft.resources.Identifier
+import org.slf4j.LoggerFactory
 
-// represents a single gear modification entry loaded from a datapack JSON.
+/** represents a single gear modification entry loaded from a datapack JSON. */
 data class GearModifier(
     val id: Identifier,
     val targets: List<String>,
@@ -12,47 +13,40 @@ data class GearModifier(
     val modifiers: Map<String, Double>,
     val stringModifiers: Map<String, String> = emptyMap(),
     val booleanModifiers: Map<String, Boolean> = emptyMap(),
+    val listModifiers: Map<String, List<String>> = emptyMap(),
     val operation: Operation,
     val priority: Int = 0,
     val slot: String? = null
 ) {
-    val targetDisplay: String get() = targets.joinToString(", ") + if (exclude.isNotEmpty()) " (exclude: ${exclude.joinToString(", ")})" else ""
+    val targetDisplay: String get() {
+        val base = targets.joinToString(", ")
+        val excl = if (exclude.isNotEmpty()) " (exclude: ${exclude.joinToString(", ")})" else ""
+        return "$base$excl"
+    }
 
-    // IGNORE I WILL FIX IT LMAO
     companion object {
+        private val logger = LoggerFactory.getLogger("datagear")
+
         fun fromJson(id: Identifier, json: JsonObject): GearModifier {
-            val targets =
-                if (json.get("target").isJsonArray) json.getAsJsonArray("target").map { it.asString }
-                else listOf(json.get("target").asString)
-            val exclude =
-                if (json.has("exclude")) {
-                    if (json.get("exclude").isJsonArray) json.getAsJsonArray("exclude").map { it.asString }
-                    else listOf(json.get("exclude").asString)
-                }
-                else emptyList()
-            val conditions =
-                if (json.has("conditions")) LogicalCondition.fromJson(json.getAsJsonObject("conditions"))
-                else null
+            val targets = json.getStringList("target")
+            if (targets.isEmpty()) logger.warn("DataGear: Modifier '$id' has no targets")
+            val exclude = json.getStringList("exclude")
+            val conditions = if (json.has("conditions")) LogicalCondition.fromJson(json.getAsJsonObject("conditions")) else null
             val modifiers = mutableMapOf<String, Double>()
             val stringModifiers = mutableMapOf<String, String>()
             val booleanModifiers = mutableMapOf<String, Boolean>()
+            val listModifiers = mutableMapOf<String, List<String>>()
             if (json.has("modifiers")) {
                 val modObj = json.getAsJsonObject("modifiers")
                 for ((key, value) in modObj.entrySet()) {
-                    if (value.isJsonPrimitive && value.asJsonPrimitive.isBoolean) booleanModifiers[key] = value.asBoolean
-                    else if (value.isJsonPrimitive && value.asJsonPrimitive.isString) stringModifiers[key] = value.asString
-                    else modifiers[key] = value.asDouble
+                    when {
+                        value.isJsonArray -> listModifiers[key] = value.asJsonArray.map { it.asString }
+                        value.isJsonPrimitive && value.asJsonPrimitive.isBoolean -> booleanModifiers[key] = value.asBoolean
+                        value.isJsonPrimitive && value.asJsonPrimitive.isString -> stringModifiers[key] = value.asString
+                        else -> modifiers[key] = value.asDouble
+                    }
                 }
             }
-            val operation =
-                if (json.has("operation")) Operation.fromString(json.get("operation").asString)
-                else Operation.ADD
-            val priority =
-                if (json.has("priority")) json.get("priority").asInt
-                else 0
-            val slot =
-                if (json.has("slot")) json.get("slot").asString
-                else null
             return GearModifier(
                 id = id,
                 targets = targets,
@@ -61,10 +55,25 @@ data class GearModifier(
                 modifiers = modifiers,
                 stringModifiers = stringModifiers,
                 booleanModifiers = booleanModifiers,
-                operation = operation,
-                priority = priority,
-                slot = slot
+                listModifiers = listModifiers,
+                operation = json.getStringOrNull("operation")?.let {
+                    try { Operation.fromString(it) }
+                    catch (_: IllegalArgumentException) {
+                        logger.warn("DataGear: Unknown operation '$it' in '$id', defaulting to ADD")
+                        Operation.ADD
+                    } } ?: Operation.ADD,
+                priority = json.getIntOrNull("priority") ?: 0,
+                slot = json.getStringOrNull("slot")
             )
         }
+
+        private fun JsonObject.getStringList(key: String): List<String> {
+            val elem = get(key)?.takeIf { it.isJsonPrimitive || it.isJsonArray } ?: return emptyList()
+            return if (elem.isJsonArray) elem.asJsonArray.map { it.asString } else listOf(elem.asString)
+        }
+
+        private fun JsonObject.getIntOrNull(key: String): Int? = get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asInt
+
+        private fun JsonObject.getStringOrNull(key: String): String? = get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
     }
 }

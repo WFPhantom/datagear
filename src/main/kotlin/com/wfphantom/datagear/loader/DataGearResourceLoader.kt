@@ -1,6 +1,7 @@
 package com.wfphantom.datagear.loader
 
 import com.google.gson.JsonParser
+import com.wfphantom.datagear.DataGear
 import com.wfphantom.datagear.api.GearModifier
 import com.wfphantom.datagear.engine.ModifierEngine
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents
@@ -10,13 +11,12 @@ import net.minecraft.server.MinecraftServer
 import net.minecraft.server.packs.PackType
 import net.minecraft.server.packs.resources.ResourceManager
 import net.minecraft.server.packs.resources.ResourceManagerReloadListener
-import com.wfphantom.DataGear
 
 /**
  * Loads DataGear modifier JSONs from datapacks.
  *
- * Directory structure:
- * - `data/<namespace>/datagear/modify/<target_namespace>/<file>.json` - Modify existing items
+ * Directory:
+ * - `data/<namespace>/datagear/modify/<file>.json`
  */
 object DataGearResourceLoader {
 
@@ -24,23 +24,25 @@ object DataGearResourceLoader {
     private const val MODIFY_DIR = "datagear/modify"
 
     fun register() {
-        ResourceLoader.get(PackType.SERVER_DATA).registerReloadListener(Identifier.parse("datagear:resource_loader"), ResourceManagerReloadListener { manager -> reload(manager) })
-
+        ResourceLoader.get(PackType.SERVER_DATA).registerReloadListener(Identifier.parse("datagear:resource_loader"), ResourceManagerReloadListener(::reload))
         ServerLifecycleEvents.SERVER_STARTED.register { server ->
             logger.info("DataGear: Server started, applying modifiers...")
-            ModifierEngine.applyAll()
-            refreshPlayerInventories(server)
+            applyAndRefresh(server)
         }
 
         ServerLifecycleEvents.END_DATA_PACK_RELOAD.register { server, _, _ ->
-            logger.info("DataGear: Data pack reload complete, applying modifiers...")
-            ModifierEngine.applyAll()
-            refreshPlayerInventories(server)
+            logger.info("DataGear: Datapack reload complete, applying modifiers...")
+            applyAndRefresh(server)
         }
     }
 
+    private fun applyAndRefresh(server: MinecraftServer) {
+        ModifierEngine.applyAll(server)
+        refreshPlayerInventories(server)
+    }
+
     private fun reload(manager: ResourceManager) {
-        logger.info("DataGear: Reloading datapacks...")
+        logger.info("DataGear: Clearing ${ModifierEngine.getModifiers().size} modifier(s)...")
         ModifierEngine.clear()
         loadModifiers(manager)
     }
@@ -48,26 +50,38 @@ object DataGearResourceLoader {
     /**
      * Refreshes all online players' inventory stacks so tooltips reflect updated item prototypes.
      * Existing ItemStacks hold a snapshot of the item's components from creation time,
-     * so after modifying the prototype via bindComponents() we need to rebuild them. (please dont break lmao)
+     * so after modifying the prototype via bindComponents() we need to rebuild them. (please don't break lmao)
      */
     private fun refreshPlayerInventories(server: MinecraftServer) {
+        var totalRefreshed = 0
         for (player in server.playerList.players) {
             val inventory = player.inventory
             for (i in 0 until inventory.containerSize) {
                 val stack = inventory.getItem(i)
                 if (stack.isEmpty) continue
+                
+                val isPrototypeModified = ModifierEngine.isItemModified(stack.item)
+                val hasPerInstanceMatch = ModifierEngine.hasPerInstanceModifiers(stack)
+
+                if (!isPrototypeModified && !hasPerInstanceMatch) continue
+
                 // Create a fresh stack from the (now-modified) item prototype
                 val fresh = stack.item.defaultInstance
                 // Copy over the count
                 fresh.count = stack.count
                 // Re-apply any per-instance patches (enchantments, custom name, damage, etc.)
                 fresh.applyComponents(stack.componentsPatch)
+
+                // Re-apply per-instance modifiers
+                if (hasPerInstanceMatch) ModifierEngine.applyPerInstanceModifiers(fresh)
+                
                 inventory.setItem(i, fresh)
+                if (isPrototypeModified) totalRefreshed++
             }
             // Sync inventory to client
             player.inventoryMenu.broadcastChanges()
         }
-        logger.info("DataGear: Refreshed inventories for ${server.playerList.players.size} player(s)")
+        logger.info("DataGear: Refreshed $totalRefreshed item(s) across ${server.playerList.players.size} player(s)")
     }
 
     private fun loadModifiers(manager: ResourceManager) {

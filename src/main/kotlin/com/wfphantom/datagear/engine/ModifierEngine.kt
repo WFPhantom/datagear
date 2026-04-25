@@ -1,6 +1,8 @@
 package com.wfphantom.datagear.engine
 
-import com.wfphantom.datagear.api.Condition
+import com.google.gson.JsonParser
+import com.mojang.serialization.JsonOps
+import com.wfphantom.datagear.DataGear
 import com.wfphantom.datagear.api.GearModifier
 import com.wfphantom.datagear.api.LogicalCondition
 import com.wfphantom.datagear.api.Operation
@@ -10,24 +12,23 @@ import net.minecraft.core.component.DataComponentMap
 import net.minecraft.core.component.DataComponentType
 import net.minecraft.core.component.DataComponents
 import net.minecraft.core.registries.BuiltInRegistries
+import net.minecraft.core.registries.Registries
+import net.minecraft.network.chat.Component
+import net.minecraft.network.chat.ComponentSerialization
 import net.minecraft.resources.Identifier
+import net.minecraft.server.MinecraftServer
+import net.minecraft.server.level.ServerPlayer
+import net.minecraft.tags.TagKey
 import net.minecraft.world.entity.EquipmentSlot
 import net.minecraft.world.entity.EquipmentSlotGroup
 import net.minecraft.world.entity.ai.attributes.Attribute
 import net.minecraft.world.entity.ai.attributes.AttributeModifier
-import net.minecraft.world.entity.ai.attributes.Attributes
-import net.minecraft.core.registries.Registries
-import net.minecraft.tags.TagKey
 import net.minecraft.world.item.Item
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.component.ItemAttributeModifiers
-import net.minecraft.world.item.component.Tool
-import net.minecraft.world.item.component.Weapon
+import net.minecraft.world.item.component.ItemLore
 import net.minecraft.world.item.equipment.Equippable
-import com.wfphantom.DataGear
 import net.minecraft.util.Unit as McUnit
-import java.math.BigDecimal
-import java.math.RoundingMode
 
 /**
  * Core engine that applies [GearModifier]s to items.
@@ -36,28 +37,19 @@ import java.math.RoundingMode
 object ModifierEngine {
 
     private val logger = DataGear.logger
-    private val modifiers = mutableListOf<GearModifier>()
+    private val prototypeModifiers = mutableListOf<GearModifier>()
+    private val perInstanceModifiers = mutableListOf<GearModifier>()
+    private val modifiedItems = mutableSetOf<Item>()
+    private val componentNumericTypeHints = mutableMapOf<DataComponentType<*>, ComponentMetadata>()
+    private val targetCache = mutableMapOf<Identifier, List<Item>>()
 
-    // Map of attribute name strings to their Holder references
-    private val ATTRIBUTE_MAP: Map<String, Holder<Attribute>> = mapOf(
-        "armor" to Attributes.ARMOR,
-        "armor_toughness" to Attributes.ARMOR_TOUGHNESS,
-        "attack_damage" to Attributes.ATTACK_DAMAGE,
-        "attack_speed" to Attributes.ATTACK_SPEED,
-        "attack_knockback" to Attributes.ATTACK_KNOCKBACK,
-        "knockback_resistance" to Attributes.KNOCKBACK_RESISTANCE,
-        "movement_speed" to Attributes.MOVEMENT_SPEED,
-        "max_health" to Attributes.MAX_HEALTH,
-        "luck" to Attributes.LUCK,
-        "block_break_speed" to Attributes.BLOCK_BREAK_SPEED,
-        "block_interaction_range" to Attributes.BLOCK_INTERACTION_RANGE,
-        "entity_interaction_range" to Attributes.ENTITY_INTERACTION_RANGE,
-        "fall_damage_multiplier" to Attributes.FALL_DAMAGE_MULTIPLIER,
-        "gravity" to Attributes.GRAVITY,
-        "jump_strength" to Attributes.JUMP_STRENGTH,
-        "safe_fall_distance" to Attributes.SAFE_FALL_DISTANCE,
-        "scale" to Attributes.SCALE,
-        "mining_efficiency" to Attributes.MINING_EFFICIENCY
+    private enum class LogicalType {
+        INT, FLOAT, DOUBLE, LONG, BOOLEAN, UNIT, STRING, LIST, UNKNOWN
+    }
+
+    private data class ComponentMetadata(
+        val logicalType: LogicalType,
+        val typeName: String
     )
 
     // Base values that Minecraft adds to ADD_VALUE modifiers for tooltip display
@@ -67,21 +59,101 @@ object ModifierEngine {
         "movement_speed" to 0.1
     )
 
-    fun clear() {
-        modifiers.clear()
+    fun getAvailableProperties(): Map<String, String> {
+        val props = mutableMapOf<String, String>()
+
+        // Dynamic lookup for all attributes
+        BuiltInRegistries.ATTRIBUTE.keySet().forEach { id ->
+            if (id.namespace == "minecraft") props[id.path] = "Attribute (Double)"
+            else props[id.toString()] = "Attribute (Double)"
+        }
+
+        componentNumericTypeHints.forEach { (type, metadata) ->
+            val id = BuiltInRegistries.DATA_COMPONENT_TYPE.getKey(type) ?: return@forEach
+            if (id.namespace == "minecraft") props[id.path] = metadata.typeName
+            else props[id.toString()] = metadata.typeName
+        }
+
+        DataGearCompatRegistry.getPropertyHandlers().forEach { handler -> handler.getSupportedProperties().forEach { prop -> props[prop] = handler.propertyType } }
+
+        // Hardcoded (fix later)
+        val aliases = mapOf(
+            "equipment_slot" to "String", // Alias for Equippable.slot
+            "item_name" to "String",      // Alias for DataComponents.ITEM_NAME
+            "custom_name" to "String",    // Alias for DataComponents.CUSTOM_NAME
+            "lore" to "List"              // Alias for DataComponents.LORE
+        )
+        props.putAll(aliases)
+        return props.toSortedMap()
     }
+
+    fun clear() {
+        prototypeModifiers.clear()
+        perInstanceModifiers.clear()
+        modifiedItems.clear()
+        targetCache.clear()
+    }
+
+    fun getModifiers(): List<GearModifier> = prototypeModifiers + perInstanceModifiers
 
     fun addAll(newModifiers: List<GearModifier>) {
-        modifiers.addAll(newModifiers)
+        for (modifier in newModifiers) {
+            if (modifier.conditions?.hasPerInstanceCondition() == true) perInstanceModifiers.add(modifier)
+            else prototypeModifiers.add(modifier)
+        }
+        perInstanceModifiers.sortBy { it.priority }
+        prototypeModifiers.sortBy { it.priority }
     }
 
-    fun getModifiers(): List<GearModifier> = modifiers.toList()
+    fun isItemModified(item: Item): Boolean = modifiedItems.contains(item)
+    
+    fun hasPerInstanceModifiers(stack: ItemStack): Boolean {
+        if (perInstanceModifiers.isEmpty()) return false
+        val itemId = BuiltInRegistries.ITEM.getKey(stack.item)
+        return perInstanceModifiers.any { modifierTargetsItem(it, itemId) }
+    }
+
+    /**
+     * Initializes a cache of numeric type hints for data components.
+     * This is used as a heuristic when applying numeric modifiers to items that don't have the component yet.
+     */
+    fun initializeCache() {
+        componentNumericTypeHints.clear()
+        BuiltInRegistries.DATA_COMPONENT_TYPE.forEach { type ->
+            val codecStr = try { type.codec()?.toString()?.lowercase() ?: "" } catch (_: Exception) { "" }
+            
+            val logicalType = when {
+                codecStr.contains("integer") || codecStr.contains("int") -> LogicalType.INT
+                codecStr.contains("float") -> LogicalType.FLOAT
+                codecStr.contains("double") -> LogicalType.DOUBLE
+                codecStr.contains("long") -> LogicalType.LONG
+                codecStr.contains("boolean") -> LogicalType.BOOLEAN
+                codecStr.contains("unit") -> LogicalType.UNIT
+                type.codec() == null && !type.isTransient -> LogicalType.UNIT
+                codecStr.contains("string") || codecStr.contains("component") || codecStr.contains("mutablecomponent") -> LogicalType.STRING
+                codecStr.contains("list") || codecStr.contains("itemlore") -> LogicalType.LIST
+                else -> LogicalType.UNKNOWN
+            }
+
+            val typeName = when (logicalType) {
+                LogicalType.INT -> "Int"
+                LogicalType.FLOAT -> "Float"
+                LogicalType.DOUBLE -> "Double"
+                LogicalType.LONG -> "Long"
+                LogicalType.BOOLEAN, LogicalType.UNIT -> "Boolean"
+                LogicalType.STRING -> "String"
+                LogicalType.LIST -> "List"
+                else -> "Component"
+            }
+            componentNumericTypeHints[type] = ComponentMetadata(logicalType, typeName)
+        }
+        logger.info("DataGear: Cached numeric hints for ${componentNumericTypeHints.size} components")
+    }
 
     fun modifierTargetsItem(modifier: GearModifier, itemId: Identifier): Boolean {
         val matchesTarget = modifier.targets.any { target -> targetMatchesItem(target, itemId) }
-        if (!matchesTarget) return false
         val excluded = modifier.exclude.any { target -> targetMatchesItem(target, itemId) }
-        return !excluded
+        return matchesTarget && !excluded
     }
 
     private fun targetMatchesItem(target: String, itemId: Identifier): Boolean {
@@ -92,38 +164,106 @@ object ModifierEngine {
         return holder.`is`(tagKey)
     }
 
-     //Called after datapack reload.
-    fun applyAll() {
-        val sorted = modifiers.sortedBy { it.priority }
+    fun applyAll(server: MinecraftServer? = null) {
+        modifiedItems.clear()
         var applied = 0
-        for (modifier in sorted) {
-            val targetItems = resolveTargetItems(modifier)
-            for (item in targetItems) if (applyModifierToItem(modifier, item)) applied++
+
+        for (modifier in prototypeModifiers) {
+            val excludedItems =
+                if (modifier.exclude.isNotEmpty()) modifier.exclude.flatMap { resolveTarget(it) }.toSet()
+                else emptySet()
+            val targetItems = resolveTargetItems(modifier, excludedItems)
+
+            for (item in targetItems) {
+                if (applyModifierToItem(modifier, item)) {
+                    applied++
+                    modifiedItems.add(item)
+                }
+            }
         }
-        logger.info("DataGear: Applied $applied modifier(s) from ${modifiers.size} rule(s)")
+        
+        // Per-instance modifiers apply to online players
+        val players = server?.playerList?.players ?: emptyList()
+        for (player in players) applyPerInstanceModifiers(player)
+
+        logger.info("DataGear: Applied $applied prototype modifier(s) from ${prototypeModifiers.size} rule(s)")
+        if (perInstanceModifiers.isNotEmpty()) logger.info("DataGear: Loaded ${perInstanceModifiers.size} per-instance rule(s)")
     }
 
-    private fun resolveTargetItems(modifier: GearModifier): List<Item> {
-        val included = modifier.targets.flatMap { resolveTarget(it) }.distinct()
-        if (modifier.exclude.isEmpty()) return included
-        val excluded = modifier.exclude.flatMap { resolveTarget(it) }.toSet()
-        return included.filter { it !in excluded }
+    fun applyPerInstanceModifiers(player: ServerPlayer) {
+        val inventory = player.inventory
+        for (i in 0 until inventory.containerSize) {
+            val stack = inventory.getItem(i)
+            applyPerInstanceModifiers(stack)
+        }
+    }
+
+    fun applyPerInstanceModifiers(stack: ItemStack) {
+        if (stack.isEmpty) return
+        val itemId = BuiltInRegistries.ITEM.getKey(stack.item)
+        val sorted = perInstanceModifiers
+        
+        if (sorted.none { modifierTargetsItem(it, itemId) }) return
+
+        // Cache prototype to avoid multiple ItemStack creations
+        val proto = stack.item.defaultInstance
+
+        // Reset to prototype before reapplying to prevent stacking
+        stack.applyComponents(proto.components)
+
+        // remove any per-instance modifiers that aren't present on the prototype
+        for (modifier in sorted) {
+            if (!modifierTargetsItem(modifier, itemId)) continue
+            for (property in modifier.booleanModifiers.keys) {
+                val id = Identifier.tryParse(property) ?: continue
+                val type = BuiltInRegistries.DATA_COMPONENT_TYPE.get(id).map { it.value() }.orElse(null) ?: continue
+                if (!proto.has(type)) stack.remove(type)
+            }
+            if (modifier.stringModifiers.containsKey("equipment_slot")) {
+                if (!proto.has(DataComponents.EQUIPPABLE)) stack.remove(DataComponents.EQUIPPABLE)
+            }
+        }
+        applyPerInstanceModifiersNoReset(stack)
+    }
+
+    fun applyPerInstanceModifiersNoReset(stack: ItemStack) {
+        if (stack.isEmpty) return
+        val itemId = BuiltInRegistries.ITEM.getKey(stack.item)
+        val sorted = perInstanceModifiers
+        
+        for (modifier in sorted) {
+            if (!modifierTargetsItem(modifier, itemId)) continue
+            applyModifierToStack(stack, modifier)
+        }
+    }
+
+    private fun applyModifierToStack(stack: ItemStack, modifier: GearModifier): Boolean {
+        return applyModifierToStack(stack, modifier, isPrototype = false)
+    }
+
+    private fun resolveTargetItems(modifier: GearModifier, excludedItems: Set<Item>): Set<Item> {
+        val included = modifier.targets.flatMap { resolveTarget(it) }.toSet()
+        if (excludedItems.isEmpty()) return included
+        return included.filter { it !in excludedItems }.toSet()
     }
 
     private fun resolveTarget(target: String): List<Item> {
-        if (!target.startsWith("#")) {
-            val itemId = Identifier.tryParse(target) ?: return emptyList()
-            val holder = BuiltInRegistries.ITEM.get(itemId).orElse(null) ?: return emptyList()
-            return listOf(holder.value())
-        }
+        val id = Identifier.tryParse(if (target.startsWith("#")) target.substring(1) else target) ?: return emptyList()
+        targetCache[id]?.let { return it }
 
-        val tagId = Identifier.tryParse(target.substring(1)) ?: return emptyList()
-        val tagKey = TagKey.create(Registries.ITEM, tagId)
-        return BuiltInRegistries.ITEM.getTagOrEmpty(tagKey).map { it.value() }
+        val items =
+            if (!target.startsWith("#")) {
+                val holder = BuiltInRegistries.ITEM.get(id).orElse(null) ?: return emptyList()
+                listOf(holder.value())
+            } else {
+                val tagKey = TagKey.create(Registries.ITEM, id)
+                BuiltInRegistries.ITEM.getTagOrEmpty(tagKey).map { it.value() }
+            }
+        targetCache[id] = items
+        return items
     }
 
     /**
-     * Applies a single modifier to a single item.
      * Modifications are written back to the item's built-in registry holder so they persist.
      * Returns true if any modification was made.
      */
@@ -131,86 +271,111 @@ object ModifierEngine {
         val itemKey = BuiltInRegistries.ITEM.getKey(item)
         val holder = BuiltInRegistries.ITEM.get(itemKey).orElse(null) ?: return false
         if (!holder.isBound || !holder.areComponentsBound()) {
-            logger.debug("DataGear: Skipping item {} - components not bound yet", BuiltInRegistries.ITEM.getKey(item))
+            logger.warn("DataGear: Skipping $itemKey - holder not bound")
             return false
         }
 
-        val stack = try {
-            item.defaultInstance
-        } catch (_: NullPointerException) {
-            logger.debug("DataGear: Skipping item {} - components not bound yet", BuiltInRegistries.ITEM.getKey(item))
-            return false
-        }
+        val stack = try { item.defaultInstance } catch (_: NullPointerException) { return false }
         if (stack.isEmpty) return false
 
-        if (modifier.conditions != null && !evaluateCondition(modifier.conditions, stack)) return false
+        val modified = applyModifierToStack(stack, modifier, isPrototype = true)
 
-        var modified = false
-        val modifiedComponents = mutableSetOf<DataComponentType<*>>()
-
-        for ((property, strValue) in modifier.stringModifiers) {
-            when (property) {
-                "equipment_slot" -> {
-                    if (modifier.operation == Operation.MULTIPLY || modifier.operation == Operation.ADD) {
-                        if (modifier.operation == Operation.MULTIPLY) logger.warn("DataGear: 'multiply' operation is not supported for equipment_slot in ${modifier.id}")
-                        else logger.warn("DataGear: 'add' operation is not supported for equipment_slot (items can only have one slot), treating as 'set' in ${modifier.id}")
-                    }
-                    val slot = try {
-                        EquipmentSlot.byName(strValue.lowercase())
-                    } catch (_: IllegalArgumentException) {
-                        null
-                    }
-                    if (slot != null) {
-                        applyEquipmentSlot(stack, slot)
-                        modifiedComponents.add(DataComponents.EQUIPPABLE)
-                        modified = true
-                    }
-                    else {
-                        // Try loading compat plugins here
-                        val handled = DataGearCompatRegistry.getPlugins().any { plugin -> plugin.applyCustomSlot(stack, strValue) }
-                        if (handled) modified = true
-                        else logger.warn("DataGear: Unknown equipment slot '$strValue' in ${modifier.id}")
-                    }
-                }
-                else -> logger.warn("DataGear: Unknown string modifier property '$property' in ${modifier.id}")
-            }
-        }
-
-        val removedComponents = mutableSetOf<DataComponentType<*>>()
-        for ((property, boolValue) in modifier.booleanModifiers) {
-            val component = applyBooleanModifier(stack, property, boolValue, modifier)
-            if (component != null) {
-                if (boolValue) modifiedComponents.add(component)
-                else removedComponents.add(component)
-                modified = true
-            }
-        }
-
-        for ((property, value) in modifier.modifiers) {
-            val componentModified = applyNumericModifier(stack, modifier, property, value)
-            if (componentModified != null) {
-                modifiedComponents.add(componentModified)
-                modified = true
-            }
-        }
-
-        // Write only the modified components back to the item's registry holder
+        @Suppress("UNCHECKED_CAST")
         if (modified) {
             val builder = DataComponentMap.builder()
             builder.addAll(item.components())
-            for (componentType in modifiedComponents) {
-                val componentValue = stack.get(componentType as DataComponentType<Any>) ?: continue
-                builder.set(componentType, componentValue)
-            }
-            // Remove components that were set to false
-            // For removed components, we need to rebuild without them
-            val finalMap = builder.build()
-            if (removedComponents.isNotEmpty()) {
-                val filteredBuilder = DataComponentMap.builder()
-                for (typed in finalMap) if (typed.type() !in removedComponents) filteredBuilder.set(typed.type() as DataComponentType<Any>, typed.value())
-                holder.bindComponents(filteredBuilder.build())
-            } else holder.bindComponents(finalMap)
+            for (typed in stack.components) builder.set(typed.type() as DataComponentType<Any>, typed.value())
+
+            holder.bindComponents(builder.build())
         }
+        return modified
+    }
+
+    private fun applyListModifier(stack: ItemStack, property: String, listValue: List<String>, modifier: GearModifier): Boolean {
+        if (property != "item_name" && property != "custom_name" && property != "lore") return false
+        
+        val components = listValue.map { text ->
+            try {
+                val json = JsonParser.parseString(text)
+                ComponentSerialization.CODEC.parse(JsonOps.INSTANCE, json).getOrThrow { e -> RuntimeException(e) }
+            } catch (_: Exception) { Component.literal(text) }
+        }
+
+        return when (property) {
+            "item_name" -> {
+                if (components.isNotEmpty()) { stack.set(DataComponents.ITEM_NAME, components.first()); true }
+                else false
+            }
+            "custom_name" -> {
+                if (components.isNotEmpty()) { stack.set(DataComponents.CUSTOM_NAME, components.first()); true }
+                else false
+            }
+            "lore" -> {
+                val currentLore = stack.get(DataComponents.LORE)
+                val newLore = when (modifier.operation) {
+                    Operation.SET -> ItemLore(components)
+                    Operation.ADD -> ItemLore((currentLore?.lines() ?: emptyList()) + components)
+                    Operation.MULTIPLY -> currentLore
+                }
+                if (newLore != null) { stack.set(DataComponents.LORE, newLore); true }
+                else false
+            }
+            else -> false
+        }
+    }
+
+    private fun applyModifierToStack(stack: ItemStack, modifier: GearModifier, isPrototype: Boolean = false): Boolean {
+        if (stack.isEmpty) return false
+        if (modifier.conditions != null && !evaluateCondition(modifier.conditions, stack)) return false
+
+        var modified = false
+        
+        for ((property, value) in modifier.stringModifiers) {
+            if (property == "equipment_slot") {
+                val slot = try { EquipmentSlot.byName(value.lowercase()) } catch (_: Exception) { null }
+                if (slot != null) {
+                    applyEquipmentSlot(stack, slot)
+                    modified = true
+                } else if (isPrototype) {
+                    val handled = DataGearCompatRegistry.getPlugins().any { it.applyCustomSlot(stack, value) }
+                    if (handled) modified = true
+                    else logger.warn("DataGear: Unknown equipment slot '$value' in ${modifier.id}")
+                }
+            }
+        }
+
+        val slotGroup = resolveSlotGroup(modifier.slot)
+        for ((property, value) in modifier.modifiers) {
+            val id = Identifier.tryParse(property) ?: continue
+
+            val attrHolder = BuiltInRegistries.ATTRIBUTE.get(id).orElse(null)
+            if (attrHolder != null) {
+                applyAttributeModifier(stack, modifier, attrHolder, value, slotGroup)
+                modified = true
+                continue
+            }
+
+            val handler = DataGearCompatRegistry.getPropertyHandler(property)
+            if (handler != null) {
+                if (handler.applyNumericModifier(stack, property, modifier.operation, value)) modified = true
+
+                continue
+            }
+
+            val componentType = BuiltInRegistries.DATA_COMPONENT_TYPE.get(id).map { it.value() }.orElse(null)
+            if (componentType != null) {
+                if (applyDynamicComponentModifier(stack, componentType, modifier.operation, value)) modified = true
+                else logger.warn("DataGear: Component '$property' exists but its value is not numeric or could not be applied in ${modifier.id}")
+
+                continue
+            }
+            logger.warn("DataGear: Unknown modifier property '$property' in ${modifier.id}")
+        }
+
+        for ((property, value) in modifier.booleanModifiers) if (applyBooleanModifier(stack, property, value, modifier) != null) modified = true
+
+        for ((property, listValue) in modifier.listModifiers) if (applyListModifier(stack, property, listValue, modifier)) modified = true
+        
         return modified
     }
 
@@ -220,115 +385,67 @@ object ModifierEngine {
         value: Boolean,
         modifier: GearModifier
     ): DataComponentType<*>? {
-        return when (property) {
-            "unbreakable" -> {
-                if (value) stack.set(DataComponents.UNBREAKABLE, McUnit.INSTANCE)
-                else stack.remove(DataComponents.UNBREAKABLE)
-                DataComponents.UNBREAKABLE
+        val id = Identifier.tryParse(property) ?: return null
+        val componentType = BuiltInRegistries.DATA_COMPONENT_TYPE.get(id).map { it.value() }.orElse(null) ?: return null
+
+        val existing = stack.get(componentType)
+        @Suppress("UNCHECKED_CAST")
+        return when {
+            existing is McUnit || (existing == null && componentType.codec() == null) -> {
+                if (value) stack.set(componentType as DataComponentType<McUnit>, McUnit.INSTANCE)
+                else stack.remove(componentType)
+                componentType
             }
-            "glider" -> {
-                if (value) stack.set(DataComponents.GLIDER, McUnit.INSTANCE)
-                else stack.remove(DataComponents.GLIDER)
-                DataComponents.GLIDER
+            existing is Boolean -> {
+                stack.set(componentType as DataComponentType<Boolean>, value)
+                componentType
             }
-            "enchantment_glint_override" -> {
-                if (value) stack.set(DataComponents.ENCHANTMENT_GLINT_OVERRIDE, true)
-                else stack.remove(DataComponents.ENCHANTMENT_GLINT_OVERRIDE)
-                DataComponents.ENCHANTMENT_GLINT_OVERRIDE
-            }
-            "intangible_projectile" -> {
-                if (value) stack.set(DataComponents.INTANGIBLE_PROJECTILE, McUnit.INSTANCE)
-                else stack.remove(DataComponents.INTANGIBLE_PROJECTILE)
-                DataComponents.INTANGIBLE_PROJECTILE
+            existing == null -> {
+                val protoValue = stack.item.defaultInstance.get(componentType)
+                when (protoValue) {
+                    is McUnit -> {
+                        if (value) stack.set(componentType as DataComponentType<McUnit>, McUnit.INSTANCE)
+                        else stack.remove(componentType)
+                        componentType
+                    }
+
+                    is Boolean -> {
+                        stack.set(componentType as DataComponentType<Boolean>, value)
+                        componentType
+                    }
+
+                    else -> {
+                        when (componentNumericTypeHints[componentType]?.logicalType) {
+                            LogicalType.UNIT -> {
+                                if (value) stack.set(componentType as DataComponentType<McUnit>, McUnit.INSTANCE)
+                                else stack.remove(componentType)
+                                componentType
+                            }
+
+                            LogicalType.BOOLEAN -> {
+                                stack.set(componentType as DataComponentType<Boolean>, value)
+                                componentType
+                            }
+
+                            else -> {
+                                logger.warn("DataGear: Cannot determine type for boolean component '$property' in ${modifier.id}")
+                                null
+                            }
+                        }
+                    }
+                }
             }
             else -> {
-                logger.warn("DataGear: Unknown boolean modifier property '$property' in ${modifier.id}")
+                logger.warn("DataGear: Component '$property' exists but is not a boolean or unit flag in ${modifier.id}")
                 null
             }
         }
     }
 
-    private fun applyNumericModifier(
-        stack: ItemStack,
-        modifier: GearModifier,
-        property: String,
-        value: Double
-    ): DataComponentType<*>? {
-        val knownAttr = ATTRIBUTE_MAP[property]
-        if (knownAttr != null) {
-            applyAttributeModifier(stack, modifier, knownAttr, value, resolveSlotGroup(modifier.slot))
-            return DataComponents.ATTRIBUTE_MODIFIERS
-        }
-
-        return when (property) {
-            "max_damage", "durability" -> {
-                applyIntComponentModifier(stack, DataComponents.MAX_DAMAGE, modifier.operation, value)
-                DataComponents.MAX_DAMAGE
-            }
-            "max_stack_size" -> {
-                applyIntComponentModifier(stack, DataComponents.MAX_STACK_SIZE, modifier.operation, value)
-                DataComponents.MAX_STACK_SIZE
-            }
-            "repair_cost" -> {
-                applyIntComponentModifier(stack, DataComponents.REPAIR_COST, modifier.operation, value)
-                DataComponents.REPAIR_COST
-            }
-            "mining_speed", "default_mining_speed" -> {
-                applyToolMiningSpeed(stack, modifier.operation, value)
-                DataComponents.TOOL
-            }
-            "damage_per_block" -> {
-                applyToolDamagePerBlock(stack, modifier.operation, value)
-                DataComponents.TOOL
-            }
-            "item_damage_per_attack" -> {
-                applyWeaponDamagePerAttack(stack, modifier.operation, value)
-                DataComponents.WEAPON
-            }
-            "disable_blocking_for_seconds" -> {
-                applyWeaponBlockingDisable(stack, modifier.operation, value)
-                DataComponents.WEAPON
-            }
-            else -> applyDynamicModifier(stack, modifier, property, value)
-        }
-    }
-
-    /**
-     * Tries to apply a modifier via dynamic attribute or component lookup. :pray:
-     * Returns the DataComponentType, which was modified, or null.
-     */
-    private fun applyDynamicModifier(
-        stack: ItemStack,
-        modifier: GearModifier,
-        property: String,
-        value: Double
-    ): DataComponentType<*>? {
-        val attrId = Identifier.tryParse(property)
-        if (attrId == null) {
-            logger.warn("DataGear: Invalid property identifier '$property' in ${modifier.id}")
-            return null
-        }
-
-        val dynamicAttrHolder = BuiltInRegistries.ATTRIBUTE.get(attrId).orElse(null)
-        if (dynamicAttrHolder != null) {
-            applyAttributeModifier(stack, modifier, dynamicAttrHolder, value, resolveSlotGroup(modifier.slot))
-            return DataComponents.ATTRIBUTE_MODIFIERS
-        }
-
-        val dynamicComponent = BuiltInRegistries.DATA_COMPONENT_TYPE.get(attrId).map { it.value() }.orElse(null)
-        if (dynamicComponent != null) {
-            if (applyDynamicComponentModifier(stack, dynamicComponent, modifier.operation, value)) return dynamicComponent
-
-            logger.warn("DataGear: Component '$property' exists but its value is not numeric in ${modifier.id}")
-            return null
-        }
-        logger.warn("DataGear: Unknown modifier property '$property' in ${modifier.id}")
-        return null
-    }
 
     fun evaluateCondition(condition: LogicalCondition, stack: ItemStack): Boolean {
         return when (condition) {
-            is LogicalCondition.Single -> testSingleCondition(condition.condition, stack)
+            is LogicalCondition.Single -> condition.condition.test(stack)
             is LogicalCondition.And -> condition.conditions.all { evaluateCondition(it, stack) }
             is LogicalCondition.Or -> condition.conditions.any { evaluateCondition(it, stack) }
             is LogicalCondition.Not -> !evaluateCondition(condition.condition, stack)
@@ -343,88 +460,80 @@ object ModifierEngine {
 
     private fun collectFailureReasons(condition: LogicalCondition, stack: ItemStack, reasons: MutableList<String>) {
         when (condition) {
-            is LogicalCondition.Single -> {
-                val cond = condition.condition
-                val numVal = getPropertyValue(cond.property, stack)
-                val strVal = getStringPropertyValue(cond.property, stack)
-                val currentDisplay = numVal?.toString() ?: strVal ?: "not present"
-                val expected = mutableListOf<String>()
-                if (cond.min != null) expected.add("min ${cond.min}")
-                if (cond.max != null) expected.add("max ${cond.max}")
-                if (cond.equals != null) expected.add("equals ${cond.equals}")
-                if (!testSingleCondition(cond, stack)) reasons.add("${cond.property}: $currentDisplay (requires ${expected.joinToString(", ")})")
-            }
+            is LogicalCondition.Single -> condition.condition.getFailureReason(stack)?.let { reasons.add(it) }
             is LogicalCondition.And -> condition.conditions.forEach { collectFailureReasons(it, stack, reasons) }
-            is LogicalCondition.Or -> {
-                if (!evaluateCondition(condition, stack)) {
-                    reasons.add("None of the OR conditions met")
-                    condition.conditions.forEach { collectFailureReasons(it, stack, reasons) }
-                }
+            is LogicalCondition.Or -> if (!evaluateCondition(condition, stack)) {
+                reasons.add("None of the OR conditions were met")
+                condition.conditions.forEach { collectFailureReasons(it, stack, reasons) }
             }
-            is LogicalCondition.Not -> if (!evaluateCondition(condition, stack)) reasons.add("NOT condition failed (inner condition is true)")
+            is LogicalCondition.Not -> if (!evaluateCondition(condition, stack)) reasons.add("NOT condition failed")
         }
     }
 
-    // Tests a single property condition against the item stack.
-    private fun testSingleCondition(condition: Condition, stack: ItemStack): Boolean {
-        // Try numeric value first
-        val numericValue = getPropertyValue(condition.property, stack)
-        if (numericValue != null) return condition.test(numericValue)
+    fun getBooleanPropertyValue(property: String, stack: ItemStack): Boolean? {
+        val id = Identifier.tryParse(property) ?: return null
+        val type = BuiltInRegistries.DATA_COMPONENT_TYPE.get(id).map { it.value() }.orElse(null) ?: return null
 
-        // Try string value
-        val stringValue = getStringPropertyValue(condition.property, stack)
-        if (stringValue != null) return condition.testString(stringValue)
-
-        return false
+        val existing = stack.get(type)
+        if (existing is McUnit) return true
+        if (existing is Boolean) return existing
+        
+        if (existing == null) {
+            val proto = stack.item.defaultInstance.get(type)
+            if (proto is McUnit || (proto == null && type.codec() == null)) return stack.has(type)
+            if (proto is Boolean) return proto
+        }
+        return null
     }
 
-    private fun getStringPropertyValue(property: String, stack: ItemStack): String? {
-        return when (property) {
-            "equipment_slot" -> stack.get(DataComponents.EQUIPPABLE)?.slot()?.name?.lowercase() ?: DataGearCompatRegistry.getPlugins().firstNotNullOfOrNull { it.getCustomSlot(stack) }
-            else -> null
-        }
+    fun getStringPropertyValue(property: String, stack: ItemStack): String? {
+        if (property == "equipment_slot") return stack.get(DataComponents.EQUIPPABLE)?.slot()?.name?.lowercase() ?: DataGearCompatRegistry.getPlugins().firstNotNullOfOrNull { it.getCustomSlot(stack) }
+        if (property == "item_name") return stack.get(DataComponents.ITEM_NAME)?.string
+        if (property == "custom_name") return stack.get(DataComponents.CUSTOM_NAME)?.string
+
+        val id = Identifier.tryParse(property) ?: return null
+        val type = BuiltInRegistries.DATA_COMPONENT_TYPE.get(id).map { it.value() }.orElse(null) ?: return null
+
+        return stack.get(type)?.toString()
     }
 
     fun getPropertyValue(property: String, stack: ItemStack): Double? {
-        val knownAttr = ATTRIBUTE_MAP[property]
-        if (knownAttr != null) return getAttributeBaseValue(stack, knownAttr)
+        val id = Identifier.tryParse(property) ?: return null
 
-        return when (property) {
-            "max_damage", "durability" -> stack.get(DataComponents.MAX_DAMAGE)?.toDouble()
-            "max_stack_size" -> stack.get(DataComponents.MAX_STACK_SIZE)?.toDouble()
-            "repair_cost" -> stack.get(DataComponents.REPAIR_COST)?.toDouble()
-            "mining_speed", "default_mining_speed" -> stack.get(DataComponents.TOOL)?.defaultMiningSpeed()?.toDouble()
-            "damage_per_block" -> stack.get(DataComponents.TOOL)?.damagePerBlock()?.toDouble()
-            "item_damage_per_attack" -> stack.get(DataComponents.WEAPON)?.itemDamagePerAttack()?.toDouble()
-            "disable_blocking_for_seconds" -> stack.get(DataComponents.WEAPON)?.disableBlockingForSeconds()?.toDouble()
-            else -> getDynamicPropertyValue(property, stack)
-        }
-    }
+        val attrHolder = BuiltInRegistries.ATTRIBUTE.get(id).orElse(null)
+        if (attrHolder != null) return getAttributeBaseValue(stack, attrHolder)
 
-    // Tries to get a property value via dynamic attribute or component lookup. :pray:
-    private fun getDynamicPropertyValue(property: String, stack: ItemStack): Double? {
-        val attrId = Identifier.tryParse(property) ?: return null
+        val handler = DataGearCompatRegistry.getPropertyHandler(property)
+        if (handler != null) return handler.getNumericValue(stack, property)
 
-        val dynamicAttrHolder = BuiltInRegistries.ATTRIBUTE.get(attrId).orElse(null)
-        if (dynamicAttrHolder != null) return getAttributeBaseValue(stack, dynamicAttrHolder)
-
-        val dynamicComponent = BuiltInRegistries.DATA_COMPONENT_TYPE.get(attrId).map { it.value() }.orElse(null)
-        if (dynamicComponent != null) return getDynamicComponentValue(stack, dynamicComponent)
+        val componentType = BuiltInRegistries.DATA_COMPONENT_TYPE.get(id).map { it.value() }.orElse(null)
+        if (componentType != null) return getDynamicComponentValue(stack, componentType)
 
         return null
     }
 
     private fun getAttributeBaseValue(stack: ItemStack, attribute: Holder<Attribute>): Double? {
         val attrMods = stack.get(DataComponents.ATTRIBUTE_MODIFIERS) ?: return null
-        var total = 0.0
+
         var found = false
+        var value = 0.0
+        var pendingMultipliedBase = 0.0
+        var pendingMultipliedTotal = 1.0
+        
         for (entry in attrMods.modifiers()) {
-            if (entry.attribute() == attribute) {
-                total += entry.modifier().amount()
-                found = true
+            if (entry.attribute() != attribute) continue
+            found = true
+            when (entry.modifier().operation()) {
+                AttributeModifier.Operation.ADD_VALUE -> value += entry.modifier().amount()
+                AttributeModifier.Operation.ADD_MULTIPLIED_BASE -> pendingMultipliedBase += entry.modifier().amount()
+                AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL -> pendingMultipliedTotal *= (1.0 + entry.modifier().amount())
             }
         }
-        return if (found) total else null
+        
+        value += value * pendingMultipliedBase
+        value *= pendingMultipliedTotal
+        
+        return if (found) value else null
     }
 
     private fun resolveSlotGroup(slotName: String?): EquipmentSlotGroup? {
@@ -440,12 +549,7 @@ object ModifierEngine {
         return null
     }
 
-    private fun formatDouble(value: Double): String {
-        val bd = BigDecimal(value).setScale(4, RoundingMode.HALF_UP).stripTrailingZeros()
-        return bd.toPlainString()
-    }
-
-    private fun computeValue(operation: Operation, current: Double, value: Double): Double = when (operation) {
+    fun computeValue(operation: Operation, current: Double, value: Double): Double = when (operation) {
         Operation.ADD -> current + value
         Operation.SET -> value
         Operation.MULTIPLY -> current * value
@@ -475,7 +579,8 @@ object ModifierEngine {
         }
 
         if (!found) {
-            val newAmount = computeValue(modifier.operation, 0.0, value)
+            val base = if (modifier.operation == Operation.MULTIPLY) 1.0 else 0.0
+            val newAmount = computeValue(modifier.operation, base, value)
             val attrKey = BuiltInRegistries.ATTRIBUTE.getKey(attribute.value()) ?: Identifier.parse("datagear:unknown")
             val targetSlot = slotGroup ?: EquipmentSlotGroup.ANY
             val slotSuffix = if (slotGroup != null) "/${slotGroup.serializedName}" else ""
@@ -484,41 +589,6 @@ object ModifierEngine {
             entries.add(ItemAttributeModifiers.Entry(attribute, attrMod, targetSlot, ItemAttributeModifiers.Display.attributeModifiers()))
         }
         stack.set(DataComponents.ATTRIBUTE_MODIFIERS, ItemAttributeModifiers(entries))
-    }
-
-    private fun applyIntComponentModifier(
-        stack: ItemStack,
-        component: DataComponentType<Int>,
-        operation: Operation,
-        value: Double
-    ) {
-        val current = stack.get(component) ?: return
-        val newValue = computeValue(operation, current.toDouble(), value).toInt().coerceAtLeast(0)
-        stack.set(component, newValue)
-    }
-
-    private fun applyToolMiningSpeed(stack: ItemStack, operation: Operation, value: Double) {
-        val tool = stack.get(DataComponents.TOOL) ?: return
-        val newSpeed = computeValue(operation, tool.defaultMiningSpeed().toDouble(), value).toFloat()
-        stack.set(DataComponents.TOOL, Tool(tool.rules(), newSpeed, tool.damagePerBlock(), tool.canDestroyBlocksInCreative()))
-    }
-
-    private fun applyToolDamagePerBlock(stack: ItemStack, operation: Operation, value: Double) {
-        val tool = stack.get(DataComponents.TOOL) ?: return
-        val newDmg = computeValue(operation, tool.damagePerBlock().toDouble(), value).toInt().coerceAtLeast(0)
-        stack.set(DataComponents.TOOL, Tool(tool.rules(), tool.defaultMiningSpeed(), newDmg, tool.canDestroyBlocksInCreative()))
-    }
-
-    private fun applyWeaponDamagePerAttack(stack: ItemStack, operation: Operation, value: Double) {
-        val weapon = stack.get(DataComponents.WEAPON) ?: return
-        val newDmg = computeValue(operation, weapon.itemDamagePerAttack().toDouble(), value).toInt().coerceAtLeast(0)
-        stack.set(DataComponents.WEAPON, Weapon(newDmg, weapon.disableBlockingForSeconds()))
-    }
-
-    private fun applyWeaponBlockingDisable(stack: ItemStack, operation: Operation, value: Double) {
-        val weapon = stack.get(DataComponents.WEAPON) ?: return
-        val newVal = computeValue(operation, weapon.disableBlockingForSeconds().toDouble(), value).toFloat().coerceAtLeast(0f)
-        stack.set(DataComponents.WEAPON, Weapon(weapon.itemDamagePerAttack(), newVal))
     }
 
     private fun applyEquipmentSlot(stack: ItemStack, slot: EquipmentSlot) {
@@ -552,6 +622,8 @@ object ModifierEngine {
         value: Double
     ): Boolean {
         val current = stack.get(componentType)
+
+        @Suppress("UNCHECKED_CAST")
         if (current != null) {
             return when (current) {
                 is Int -> {
@@ -574,21 +646,57 @@ object ModifierEngine {
             }
         }
 
+        @Suppress("UNCHECKED_CAST")
         if (operation == Operation.SET || operation == Operation.ADD) {
-            val types: List<Pair<String, () -> Unit>> = listOf(
-                "Int" to { stack.set(componentType as DataComponentType<Int>, value.toInt()) },
-                "Float" to { stack.set(componentType as DataComponentType<Float>, value.toFloat()) },
-                "Double" to { stack.set(componentType as DataComponentType<Double>, value) }
-            )
-            for ((_, setter) in types) {
-                try {
-                    setter()
-                    if (stack.has(componentType)) return true
-                } catch (_: Exception) {
-                    // Try next type LMAOO
+            val metadata = componentNumericTypeHints[componentType]
+            return when (metadata?.logicalType) {
+                LogicalType.INT -> {
+                    stack.set(componentType as DataComponentType<Int>, value.toInt())
+                    true
+                }
+                LogicalType.FLOAT -> {
+                    stack.set(componentType as DataComponentType<Float>, value.toFloat())
+                    true
+                }
+                LogicalType.DOUBLE -> {
+                    stack.set(componentType as DataComponentType<Double>, value)
+                    true
+                }
+                LogicalType.LONG -> {
+                    stack.set(componentType as DataComponentType<Long>, value.toLong())
+                    true
+                }
+                else -> {
+                    // Fallback to codec inspection if not in cache or unknown
+                    val codecStr = try { componentType.codec()?.toString()?.lowercase() ?: "" } catch (_: Exception) { "" }
+                    
+                    when {
+                        codecStr.contains("integer") || codecStr.contains("int") -> {
+                            try { stack.set(componentType as DataComponentType<Int>, value.toInt()); true } catch (_: Exception) { false }
+                        }
+                        codecStr.contains("float") -> {
+                            try { stack.set(componentType as DataComponentType<Float>, value.toFloat()); true } catch (_: Exception) { false }
+                        }
+                        codecStr.contains("double") -> {
+                            try { stack.set(componentType as DataComponentType<Double>, value); true } catch (_: Exception) { false }
+                        }
+                        codecStr.contains("long") -> {
+                            try { stack.set(componentType as DataComponentType<Long>, value.toLong()); true } catch (_: Exception) { false }
+                        }
+                        else -> {
+                            // me: https://www.youtube.com/watch?v=mH3qUgJWLYU
+                            var success = false
+                            try { stack.set(componentType as DataComponentType<Int>, value.toInt()); success = true } catch (_: Exception) {}
+                            if (!success) try { stack.set(componentType as DataComponentType<Float>, value.toFloat()); success = true } catch (_: Exception) {}
+                            
+                            if (!success) {
+                                logger.warn("DataGear: Failed to set component '$componentType' to value $value - component type may not accept numeric values")
+                                false
+                            } else true
+                        }
+                    }
                 }
             }
-            logger.warn("DataGear: Failed to set component '$componentType' to value $value - component type may not accept numeric values")
         }
         return false
     }
@@ -611,100 +719,93 @@ object ModifierEngine {
         val props = linkedMapOf<String, Any?>()
 
         val attrMods = stack.get(DataComponents.ATTRIBUTE_MODIFIERS)
-        val knownAttrHolders = ATTRIBUTE_MAP.values.toSet()
         if (attrMods != null) {
-            val allAttributes = linkedMapOf<String, Holder<Attribute>>()
-            for ((name, attr) in ATTRIBUTE_MAP) if (attrMods.modifiers().any { it.attribute() == attr }) allAttributes[name] = attr
-            // Discover modded attributes not in ATTRIBUTE_MAP :pray:
-            for (entry in attrMods.modifiers()) {
-                if (entry.attribute() !in knownAttrHolders) {
-                    val attrKey = BuiltInRegistries.ATTRIBUTE.getKey(entry.attribute().value())
-                    if (attrKey != null) allAttributes.putIfAbsent(attrKey.toString(), entry.attribute())
-                }
-            }
-
-            for ((name, attr) in allAttributes) {
-                val entriesBySlot = mutableMapOf<EquipmentSlotGroup, Double>()
-                for (entry in attrMods.modifiers()) {
-                    if (entry.attribute() == attr) {
-                        entriesBySlot[entry.slot()] = (entriesBySlot[entry.slot()] ?: 0.0) + entry.modifier().amount()
+            val attributeGroups = attrMods.modifiers().groupBy { Pair(it.attribute(), it.slot()) }
+            
+            for ((group, entries) in attributeGroups) {
+                val (attr, slot) = group
+                var value = 0.0
+                var pendingMultipliedBase = 0.0
+                var pendingMultipliedTotal = 1.0
+                
+                for (entry in entries) {
+                    when (entry.modifier().operation()) {
+                        AttributeModifier.Operation.ADD_VALUE -> value += entry.modifier().amount()
+                        AttributeModifier.Operation.ADD_MULTIPLIED_BASE -> pendingMultipliedBase += entry.modifier().amount()
+                        AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL -> pendingMultipliedTotal *= (1.0 + entry.modifier().amount())
                     }
                 }
-                if (entriesBySlot.isEmpty()) continue
-
-                if (entriesBySlot.size == 1) {
-                    val (slot, total) = entriesBySlot.entries.first()
-                    var displayTotal = total
-                    if (attrMods.modifiers().any { it.attribute() == attr && it.modifier().operation() == AttributeModifier.Operation.ADD_VALUE }) {
-                        val base = ATTRIBUTE_PLAYER_BASE[name]
-                        if (base != null) displayTotal += base
-                    }
-                    val slotSuffix = if (slot != EquipmentSlotGroup.ANY) " [${slot.serializedName}]" else ""
-                    props[name] = "${formatDouble(displayTotal)}$slotSuffix"
-                } else {
-                    for ((slot, total) in entriesBySlot) {
-                        var displayTotal = total
-                        if (attrMods.modifiers().any { it.attribute() == attr && it.slot() == slot && it.modifier().operation() == AttributeModifier.Operation.ADD_VALUE }) {
-                            val base = ATTRIBUTE_PLAYER_BASE[name]
-                            if (base != null) displayTotal += base
-                        }
-                        val slotSuffix = if (slot != EquipmentSlotGroup.ANY) " [${slot.serializedName}]" else ""
-                        props["$name$slotSuffix"] = formatDouble(displayTotal)
-                    }
+                
+                value += value * pendingMultipliedBase
+                value *= pendingMultipliedTotal
+                
+                val attrId = BuiltInRegistries.ATTRIBUTE.getKey(attr.value())
+                val prettyName = attrId?.path ?: "unknown"
+                
+                var displayTotal = value
+                if (entries.any { it.modifier().operation() == AttributeModifier.Operation.ADD_VALUE }) {
+                    val base = ATTRIBUTE_PLAYER_BASE[prettyName]
+                    if (base != null) displayTotal += base
                 }
+                
+                val slotSuffix = if (slot != EquipmentSlotGroup.ANY) " [${slot.serializedName}]" else ""
+                props["$prettyName$slotSuffix"] = displayTotal.toString()
             }
         }
 
-        stack.get(DataComponents.MAX_DAMAGE)?.let { props["max_damage"] = it }
-        stack.get(DataComponents.MAX_STACK_SIZE)?.let { props["max_stack_size"] = it }
-        val repairCost = stack.get(DataComponents.REPAIR_COST)
-        if (repairCost != null && (repairCost > 0 || stack.has(DataComponents.MAX_DAMAGE))) props["repair_cost"] = repairCost
-        stack.get(DataComponents.TOOL)?.let { tool ->
-            props["default_mining_speed"] = tool.defaultMiningSpeed()
-            props["damage_per_block"] = tool.damagePerBlock()
-        }
-        stack.get(DataComponents.WEAPON)?.let { weapon ->
-            props["item_damage_per_attack"] = weapon.itemDamagePerAttack()
-            props["disable_blocking_for_seconds"] = weapon.disableBlockingForSeconds()
-        }
-        stack.get(DataComponents.EQUIPPABLE)?.let { equip ->
-            props["equipment_slot"] = equip.slot().name
-        }
-        stack.get(DataComponents.ENCHANTABLE)?.let { props["enchantability"] = it }
-
-        if (stack.has(DataComponents.UNBREAKABLE)) props["unbreakable"] = true
-        if (stack.has(DataComponents.GLIDER)) props["glider"] = true
-        if (stack.has(DataComponents.ENCHANTMENT_GLINT_OVERRIDE)) props["enchantment_glint_override"] = stack.get(DataComponents.ENCHANTMENT_GLINT_OVERRIDE)
-        if (stack.has(DataComponents.INTANGIBLE_PROJECTILE)) props["intangible_projectile"] = true
-
-        // Discover modded data components with numeric values :pray:
-        val knownComponents = setOf(
-            DataComponents.MAX_DAMAGE, DataComponents.MAX_STACK_SIZE, DataComponents.REPAIR_COST,
-            DataComponents.TOOL, DataComponents.WEAPON, DataComponents.EQUIPPABLE,
-            DataComponents.ENCHANTABLE, DataComponents.ATTRIBUTE_MODIFIERS,
-            DataComponents.DAMAGE, DataComponents.UNBREAKABLE, DataComponents.ENCHANTMENTS,
-            DataComponents.STORED_ENCHANTMENTS, DataComponents.TOOLTIP_DISPLAY,
-            DataComponents.ITEM_NAME, DataComponents.CUSTOM_NAME, DataComponents.LORE,
-            DataComponents.RARITY, DataComponents.CUSTOM_MODEL_DATA, DataComponents.REPAIRABLE,
-            DataComponents.GLIDER, DataComponents.ENCHANTMENT_GLINT_OVERRIDE,
-            DataComponents.INTANGIBLE_PROJECTILE
+        // Dynamic component discovery
+        val allSources = listOfNotNull(stack, heldStack)
+        val seenTypes = mutableSetOf<DataComponentType<*>>()
+        
+        // Components that are already handled
+        val excludedTypes = setOf(
+            DataComponents.ATTRIBUTE_MODIFIERS,
+            DataComponents.DAMAGE
         )
-        // Check both prototype and held stack for modded components (runtime-only components
-        // only exist on the actual held item, not the prototype) :pray:
-        val discoveredTypes = mutableSetOf<DataComponentType<*>>()
-        for (source in listOfNotNull(stack, heldStack)) {
-            for (typedComponent in source.components) {
-                val componentType = typedComponent.type()
-                if (componentType in knownComponents || componentType in discoveredTypes) continue
-                discoveredTypes.add(componentType)
-                val componentId = BuiltInRegistries.DATA_COMPONENT_TYPE.getKey(componentType) ?: continue
-                val numericValue = getDynamicComponentValue(source, componentType)
-                if (numericValue != null) {
-                    props[componentId.toString()] = formatDouble(numericValue)
-                } else {
-                    val value = source.get(componentType)
-                    if (value != null && componentId.namespace != "minecraft") props[componentId.toString()] = value.toString()
+        
+        for (source in allSources) {
+            for (typed in source.components) {
+                val type = typed.type()
+                if (type in excludedTypes || type in seenTypes) continue
+                val id = BuiltInRegistries.DATA_COMPONENT_TYPE.getKey(type) ?: continue
+
+                var handledByHandler = false
+                val handlers = DataGearCompatRegistry.getHandlersForType(type)
+                if (handlers.isNotEmpty()) {
+                    for (handler in handlers) {
+                        for (prop in handler.getSupportedProperties()) {
+                            val formatted = handler.formatValue(source, prop)
+                            if (formatted != null) props[prop] = formatted
+                        }
+                    }
+                    handledByHandler = true
                 }
+
+                if (handledByHandler) {
+                    seenTypes.add(type)
+                    continue
+                }
+
+                val value: Any? = when (type) {
+                    DataComponents.REPAIR_COST -> {
+                        val cost = source.get(DataComponents.REPAIR_COST)
+                        if (cost != null && (cost > 0 || source.has(DataComponents.MAX_DAMAGE))) cost else null
+                    }
+                    DataComponents.LORE -> {
+                        val lore = source.get(DataComponents.LORE)
+                        if (lore != null && lore.lines().isNotEmpty()) props["lore"] = lore.lines().map { it.string }
+                        null
+                    }
+                    else -> {
+                        val numericValue = getDynamicComponentValue(source, type)
+                        numericValue
+                            ?: if (id.namespace != "minecraft") typed.value()
+                            else if (type.codec() == null && !type.isTransient) true // boolean flag
+                            else null
+                    }
+                }
+                if (value != null) props[id.toString()] = value
+                seenTypes.add(type)
             }
         }
         return props
