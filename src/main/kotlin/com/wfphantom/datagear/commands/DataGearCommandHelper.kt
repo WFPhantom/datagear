@@ -30,6 +30,7 @@ object DataGearCommandHelper {
         dispatcher.register(command)
         dispatcher.register(
             Commands.literal("datagear")
+                .requires { it.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_MODERATOR) }
                 .redirect(dispatcher.register(command))
                 .executes { ctx -> inspectHeldItem(ctx) }
         )
