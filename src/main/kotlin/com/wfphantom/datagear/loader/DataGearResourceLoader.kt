@@ -4,13 +4,9 @@ import com.google.gson.JsonParser
 import com.wfphantom.datagear.DataGear
 import com.wfphantom.datagear.api.GearModifier
 import com.wfphantom.datagear.engine.ModifierEngine
-import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents
-import net.fabricmc.fabric.api.resource.v1.ResourceLoader
 import net.minecraft.resources.Identifier
 import net.minecraft.server.MinecraftServer
-import net.minecraft.server.packs.PackType
 import net.minecraft.server.packs.resources.ResourceManager
-import net.minecraft.server.packs.resources.ResourceManagerReloadListener
 
 /**
  * Loads DataGear modifier JSONs from datapacks.
@@ -23,25 +19,12 @@ object DataGearResourceLoader {
     private val logger = DataGear.logger
     private const val MODIFY_DIR = "datagear/modify"
 
-    fun register() {
-        ResourceLoader.get(PackType.SERVER_DATA).registerReloadListener(Identifier.parse("datagear:resource_loader"), ResourceManagerReloadListener(::reload))
-        ServerLifecycleEvents.SERVER_STARTED.register { server ->
-            logger.info("DataGear: Server started, applying modifiers...")
-            applyAndRefresh(server)
-        }
-
-        ServerLifecycleEvents.END_DATA_PACK_RELOAD.register { server, _, _ ->
-            logger.info("DataGear: Datapack reload complete, applying modifiers...")
-            applyAndRefresh(server)
-        }
-    }
-
-    private fun applyAndRefresh(server: MinecraftServer) {
+    internal fun applyAndRefresh(server: MinecraftServer) {
         ModifierEngine.applyAll(server)
         refreshPlayerInventories(server)
     }
 
-    private fun reload(manager: ResourceManager) {
+    internal fun reload(manager: ResourceManager) {
         logger.info("DataGear: Clearing ${ModifierEngine.getModifiers().size} modifier(s)...")
         ModifierEngine.clear()
         loadModifiers(manager)

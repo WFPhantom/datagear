@@ -9,6 +9,7 @@ import com.wfphantom.datagear.commands.ModifiersCommand.suggestModifierNamespace
 import com.wfphantom.datagear.commands.ModifiersCommand.suggestNamespaces
 import com.wfphantom.datagear.commands.TagsCommand.inspectTag
 import com.wfphantom.datagear.commands.TagsCommand.listTags
+import com.wfphantom.datagear.commands.TagsCommand.suggestTagNamespaces
 import com.wfphantom.datagear.commands.TagsCommand.suggestTags
 import net.minecraft.ChatFormatting
 import net.minecraft.commands.CommandSourceStack
@@ -32,7 +33,15 @@ object DataGearCommandHelper {
     private fun buildCommand() = Commands.literal("dg")
         .requires { it.permissions().hasPermission(net.minecraft.server.permissions.Permissions.COMMANDS_MODERATOR) }
         .then(Commands.literal("tags").executes { ctx -> listTags(ctx) }
-            .then(Commands.argument("tag", StringArgumentType.string()).suggests { _, builder -> suggestTags(builder) }.executes { ctx -> inspectTag(ctx) })
+            .then(Commands.literal("list")
+                .executes { ctx -> listTags(ctx) }
+                .then(Commands.argument("namespace", StringArgumentType.string())
+                    .suggests { _, builder -> suggestTagNamespaces(builder) }
+                    .executes { ctx -> listTags(ctx) })
+            )
+            .then(Commands.argument("tag", StringArgumentType.string())
+                .suggests { _, builder -> suggestTags(builder) }
+                .executes { ctx -> inspectTag(ctx) })
         )
         .then(Commands.literal("modifiers").executes { ctx -> listModifiers(ctx) }
             .then(Commands.argument("namespace", StringArgumentType.string()).suggests { _, builder -> suggestModifierNamespaces(builder) }.executes { ctx -> listModifiers(ctx) })

@@ -3,7 +3,7 @@ package com.wfphantom.datagear
 import com.wfphantom.datagear.commands.DataGearCommandRegister
 import com.wfphantom.datagear.engine.DefaultHandlers
 import com.wfphantom.datagear.engine.ModifierEngine
-import com.wfphantom.datagear.loader.DataGearResourceLoader
+import com.wfphantom.datagear.loader.DataGearResourceLoaderRegister
 import net.fabricmc.api.ModInitializer
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents
 import org.slf4j.Logger
@@ -21,7 +21,8 @@ import org.slf4j.LoggerFactory
 // TODO: Limitation to targeting by name: Items obtained after login (found in chests, crafted, etc.) won't get per-instance modifiers applied until the player renames them in an anvil or a /reload happens. There's no practical way around that without a tick-based scan, which I do not want to do because expensive.
 // TODO: Wiki.
 // TODO: "tooltip_show" attribute that would make a changed attribute show on the tooltip (this will be hell)
-// TODO: Do a standalone neo port for now, figure out multiloader later (NIGHTMARE NIGHTMARE NIGHTMARE NIGHTMARE)
+// TODO: figure out multiloader later (NIGHTMARE NIGHTMARE NIGHTMARE NIGHTMARE)
+// TODO: very low prio, but clean commands
 
 object DataGear : ModInitializer {
     val logger: Logger = LoggerFactory.getLogger("datagear")
@@ -29,7 +30,7 @@ object DataGear : ModInitializer {
     override fun onInitialize() {
         logger.info("Loading DataGear...")
 
-        DataGearResourceLoader.register()
+        DataGearResourceLoaderRegister.register()
         DataGearCommandRegister.register()
         ModifierEngine.initializeCache()
         DefaultHandlers.register()
