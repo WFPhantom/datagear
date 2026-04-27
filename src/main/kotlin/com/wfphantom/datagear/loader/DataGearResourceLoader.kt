@@ -6,13 +6,7 @@ import com.wfphantom.datagear.api.GearModifier
 import com.wfphantom.datagear.engine.ModifierEngine
 import net.minecraft.resources.Identifier
 import net.minecraft.server.MinecraftServer
-import net.minecraft.server.level.ServerPlayer
 import net.minecraft.server.packs.resources.ResourceManager
-import net.minecraft.server.packs.resources.ResourceManagerReloadListener
-import net.neoforged.neoforge.common.NeoForge.EVENT_BUS
-import net.neoforged.neoforge.event.AddServerReloadListenersEvent
-import net.neoforged.neoforge.event.entity.player.PlayerEvent.PlayerLoggedInEvent
-import net.neoforged.neoforge.event.server.ServerStartedEvent
 
 /**
  * Loads DataGear modifier JSONs from datapacks.
@@ -25,24 +19,12 @@ object DataGearResourceLoader {
     private val logger = DataGear.logger
     private const val MODIFY_DIR = "datagear/modify"
 
-    fun register() {
-        EVENT_BUS.addListener { event: AddServerReloadListenersEvent -> event.addListener(Identifier.parse("datagear:resource_loader"), ResourceManagerReloadListener(::reload)) }
-        EVENT_BUS.addListener { event: ServerStartedEvent ->
-            logger.info("DataGear: Server started, applying modifiers...")
-            applyAndRefresh(event.server)
-        }
-        EVENT_BUS.addListener { event: PlayerLoggedInEvent ->
-            val player = event.entity
-            if (player is ServerPlayer) ModifierEngine.applyPerInstanceModifiers(player)
-        }
-    }
-
-    private fun applyAndRefresh(server: MinecraftServer) {
+    internal fun applyAndRefresh(server: MinecraftServer) {
         ModifierEngine.applyAll(server)
         refreshPlayerInventories(server)
     }
 
-    private fun reload(manager: ResourceManager) {
+    internal fun reload(manager: ResourceManager) {
         logger.info("DataGear: Clearing ${ModifierEngine.getModifiers().size} modifier(s)...")
         ModifierEngine.clear()
         loadModifiers(manager)

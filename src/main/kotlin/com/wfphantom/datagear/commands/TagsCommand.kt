@@ -17,12 +17,22 @@ import java.util.concurrent.CompletableFuture
 object TagsCommand {
 
     fun listTags(ctx: CommandContext<CommandSourceStack>): Int {
+        val namespaceFilter = try { StringArgumentType.getString(ctx, "namespace") } catch (_: Exception) { null }
+
         val tags = BuiltInRegistries.ITEM.getTags().toList()
-            .filter { it.key().location().namespace == "datagear" }
+            .let { all -> if (namespaceFilter != null) all.filter { it.key().location().namespace == namespaceFilter } else all }
             .sortedBy { it.key().location().toString() }
 
+        if (tags.isEmpty()) {
+            ctx.source.sendFailure(Component.literal(
+                if (namespaceFilter != null) "No tags found for namespace: $namespaceFilter"
+                else "No tags found."
+            ))
+            return 0
+        }
+
         ctx.source.sendSuccess({
-            Component.literal("DataGear Tags (${tags.size})")
+            Component.literal(if (namespaceFilter != null) "Tags: $namespaceFilter (${tags.size})" else "Tags (${tags.size})")
                 .withStyle(Style.EMPTY.withColor(ChatFormatting.GREEN).withBold(true))
         }, false)
 
@@ -80,6 +90,16 @@ object TagsCommand {
             val tagStr = namedSet.key().location().toString()
             if (tagStr.lowercase().contains(input)) builder.suggest("\"$tagStr\"")
         }
+        return builder.buildFuture()
+    }
+
+    fun suggestTagNamespaces(builder: SuggestionsBuilder): CompletableFuture<Suggestions> {
+        val input = builder.remaining.lowercase()
+        BuiltInRegistries.ITEM.getTags()
+            .map { it.key().location().namespace }
+            .distinct().sorted()
+            .filter { it.contains(input) }
+            .forEach { builder.suggest(it) }
         return builder.buildFuture()
     }
 }

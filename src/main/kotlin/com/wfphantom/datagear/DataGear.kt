@@ -3,7 +3,7 @@ package com.wfphantom.datagear
 import com.wfphantom.datagear.commands.DataGearCommandRegister
 import com.wfphantom.datagear.engine.DefaultHandlers
 import com.wfphantom.datagear.engine.ModifierEngine
-import com.wfphantom.datagear.loader.DataGearResourceLoader
+import com.wfphantom.datagear.loader.DataGearResourceLoaderRegister
 import net.neoforged.fml.common.Mod
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
@@ -21,6 +21,7 @@ import org.slf4j.LoggerFactory
 // TODO: Wiki.
 // TODO: "tooltip_show" attribute that would make a changed attribute show on the tooltip (this will be hell)
 // TODO: figure out multiloader later (NIGHTMARE NIGHTMARE NIGHTMARE NIGHTMARE)
+// TODO: clean commands
 
 @Mod("datagear")
 object DataGear {
@@ -29,7 +30,7 @@ object DataGear {
     init {
         logger.info("Loading DataGear...")
 
-        DataGearResourceLoader.register()
+        DataGearResourceLoaderRegister.register()
         DataGearCommandRegister.register()
         ModifierEngine.initializeCache()
         DefaultHandlers.register()
