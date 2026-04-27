@@ -1,9 +1,10 @@
 package com.wfphantom.datagear.commands
 
-import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback
+import net.neoforged.neoforge.event.RegisterCommandsEvent
+import net.neoforged.neoforge.common.NeoForge.EVENT_BUS
 
 object DataGearCommandRegister {
     fun register() {
-        CommandRegistrationCallback.EVENT.register { dispatcher, _, _ -> DataGearCommandHelper.registerCommands(dispatcher) }
+        EVENT_BUS.addListener { event: RegisterCommandsEvent -> DataGearCommandHelper.registerCommands(event.dispatcher) }
     }
 }

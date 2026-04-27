@@ -4,13 +4,15 @@ import com.google.gson.JsonParser
 import com.wfphantom.datagear.DataGear
 import com.wfphantom.datagear.api.GearModifier
 import com.wfphantom.datagear.engine.ModifierEngine
-import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents
-import net.fabricmc.fabric.api.resource.v1.ResourceLoader
 import net.minecraft.resources.Identifier
 import net.minecraft.server.MinecraftServer
-import net.minecraft.server.packs.PackType
+import net.minecraft.server.level.ServerPlayer
 import net.minecraft.server.packs.resources.ResourceManager
 import net.minecraft.server.packs.resources.ResourceManagerReloadListener
+import net.neoforged.neoforge.common.NeoForge.EVENT_BUS
+import net.neoforged.neoforge.event.AddServerReloadListenersEvent
+import net.neoforged.neoforge.event.entity.player.PlayerEvent.PlayerLoggedInEvent
+import net.neoforged.neoforge.event.server.ServerStartedEvent
 
 /**
  * Loads DataGear modifier JSONs from datapacks.
@@ -24,15 +26,14 @@ object DataGearResourceLoader {
     private const val MODIFY_DIR = "datagear/modify"
 
     fun register() {
-        ResourceLoader.get(PackType.SERVER_DATA).registerReloadListener(Identifier.parse("datagear:resource_loader"), ResourceManagerReloadListener(::reload))
-        ServerLifecycleEvents.SERVER_STARTED.register { server ->
+        EVENT_BUS.addListener { event: AddServerReloadListenersEvent -> event.addListener(Identifier.parse("datagear:resource_loader"), ResourceManagerReloadListener(::reload)) }
+        EVENT_BUS.addListener { event: ServerStartedEvent ->
             logger.info("DataGear: Server started, applying modifiers...")
-            applyAndRefresh(server)
+            applyAndRefresh(event.server)
         }
-
-        ServerLifecycleEvents.END_DATA_PACK_RELOAD.register { server, _, _ ->
-            logger.info("DataGear: Datapack reload complete, applying modifiers...")
-            applyAndRefresh(server)
+        EVENT_BUS.addListener { event: PlayerLoggedInEvent ->
+            val player = event.entity
+            if (player is ServerPlayer) ModifierEngine.applyPerInstanceModifiers(player)
         }
     }
 
