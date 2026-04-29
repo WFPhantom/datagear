@@ -2,7 +2,7 @@ package com.wfphantom.datagear.engine
 
 import com.google.gson.JsonParser
 import com.mojang.serialization.JsonOps
-import com.wfphantom.datagear.DataGear
+import com.wfphantom.datagear.DataGearCommon
 import com.wfphantom.datagear.api.GearModifier
 import com.wfphantom.datagear.api.LogicalCondition
 import com.wfphantom.datagear.api.Operation
@@ -36,7 +36,7 @@ import net.minecraft.util.Unit as McUnit
  */
 object ModifierEngine {
 
-    private val logger = DataGear.logger
+    private val logger = DataGearCommon.logger
     private val prototypeModifiers = mutableListOf<GearModifier>()
     private val perInstanceModifiers = mutableListOf<GearModifier>()
     private val modifiedItems = mutableSetOf<Item>()

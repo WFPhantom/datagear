@@ -1,7 +1,7 @@
 package com.wfphantom.datagear.loader
 
 import com.google.gson.JsonParser
-import com.wfphantom.datagear.DataGear
+import com.wfphantom.datagear.DataGearCommon
 import com.wfphantom.datagear.api.GearModifier
 import com.wfphantom.datagear.engine.ModifierEngine
 import net.minecraft.resources.Identifier
@@ -16,15 +16,15 @@ import net.minecraft.server.packs.resources.ResourceManager
  */
 object DataGearResourceLoader {
 
-    private val logger = DataGear.logger
+    private val logger = DataGearCommon.logger
     private const val MODIFY_DIR = "datagear/modify"
 
-    internal fun applyAndRefresh(server: MinecraftServer) {
+    fun applyAndRefresh(server: MinecraftServer) {
         ModifierEngine.applyAll(server)
         refreshPlayerInventories(server)
     }
 
-    internal fun reload(manager: ResourceManager) {
+    fun reload(manager: ResourceManager) {
         logger.info("DataGear: Clearing ${ModifierEngine.getModifiers().size} modifier(s)...")
         ModifierEngine.clear()
         loadModifiers(manager)

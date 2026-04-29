@@ -1,11 +1,7 @@
 package com.wfphantom.datagear
 
-import com.wfphantom.datagear.commands.DataGearCommandRegister
 import com.wfphantom.datagear.engine.DefaultHandlers
 import com.wfphantom.datagear.engine.ModifierEngine
-import com.wfphantom.datagear.loader.DataGearResourceLoaderRegister
-import net.fabricmc.api.ModInitializer
-import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 
@@ -18,24 +14,16 @@ import org.slf4j.LoggerFactory
 // TODO: Allow for jeb_ rainbow name (requires changes to color rendering)
 // TODO: Test Plugin
 // TODO: Create plugin for rendering the air bar
-// TODO: Limitation to targeting by name: Items obtained after login (found in chests, crafted, etc.) won't get per-instance modifiers applied until the player renames them in an anvil or a /reload happens. There's no practical way around that without a tick-based scan, which I do not want to do because expensive.
+// TODO: Limitation of targeting by name: Items obtained after login (found in chests, crafted, etc.) won't get per-instance modifiers applied until the player renames them in an anvil or a /reload happens. There's no practical way around that without a tick-based scan, which I do not want to do because expensive.
 // TODO: Wiki.
 // TODO: "tooltip_show" attribute that would make a changed attribute show on the tooltip (this will be hell)
-// TODO: figure out multiloader later (NIGHTMARE NIGHTMARE NIGHTMARE NIGHTMARE)
-// TODO: very low prio, but clean commands
+// TODO: clean commands
 
-object DataGear : ModInitializer {
+object DataGearCommon {
     val logger: Logger = LoggerFactory.getLogger("datagear")
 
-    override fun onInitialize() {
-        logger.info("Loading DataGear...")
-
-        DataGearResourceLoaderRegister.register()
-        DataGearCommandRegister.register()
+    fun initialize() {
         ModifierEngine.initializeCache()
         DefaultHandlers.register()
-        ServerPlayConnectionEvents.JOIN.register { handler, _, _ -> ModifierEngine.applyPerInstanceModifiers(handler.player) }
-
-        logger.info("DataGear loaded successfully!")
     }
 }
