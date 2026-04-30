@@ -20,10 +20,10 @@ import java.util.Set;
  */
 public interface DataGearPlugin {
 
-    /** The mod ID this plugin provides compatibility for */
+    /** @return the mod ID string this plugin provides compatibility for */
     String getModId();
 
-    /** Returns the set of custom equipment slot names this plugin supports (e.g. setOf("curios:ring"). */
+    /** @return set of custom slot names (e.g. setOf("curios:ring")), empty by default */
     default Set<String> getCustomSlotNames() { return Set.of(); }
 
     /**
@@ -32,14 +32,11 @@ public interface DataGearPlugin {
      */
     default boolean applyCustomSlot(ItemStack stack, String slotName) { return false; }
 
-    /** Returns the current custom slot name for the item, if managed by this plugin. */
+    /** @return the custom slot name for the given item stack, or null if not handled by this plugin */
     @Nullable
     default String getCustomSlot(ItemStack stack) { return null; }
 
-    /**
-     * Resolves a custom slot name to an EquipmentSlotGroup for attribute modifiers.
-     * Return null if this plugin does not handle the slot name.
-     */
+    /** @return the EquipmentSlotGroup for the given slot name, or null if not handled by this plugin */
     @Nullable
     default EquipmentSlotGroup resolveCustomSlotGroup(String slotName) { return null; }
 }

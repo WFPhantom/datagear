@@ -6,15 +6,10 @@ import net.neoforged.fml.common.Mod
 
 @Mod("datagear")
 object DataGear {
-    private val logger = DataGearCommon.logger
-
     init {
-        logger.info("Loading DataGear...")
-
-        DataGearResourceLoaderRegister.register()
-        DataGearCommandRegister.register()
-        DataGearCommon.initialize()
-
-        logger.info("DataGear loaded successfully!")
+        DataGearCommon.initialize(
+            registerResources = { DataGearResourceLoaderRegister.register() },
+            registerCommands = { DataGearCommandRegister.register() }
+        )
     }
 }

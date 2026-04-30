@@ -15,14 +15,10 @@ import java.util.List;
  * Register implementations via {@link DataGearCompatRegistry#registerPropertyHandler}.
  */
 public interface PropertyHandler {
-    /**
-     * The component type this handler manages.
-     */
+    /** @return the component type this handler manages. */
     DataComponentType<?> getComponentType();
 
-    /**
-     * Returns a list of subproperty names supported by this handler.
-     */
+    /** @return a list of subproperty names supported by this handler. */
     List<String> getSupportedProperties();
 
     /**
