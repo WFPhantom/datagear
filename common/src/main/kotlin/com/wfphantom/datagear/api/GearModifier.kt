@@ -36,8 +36,8 @@ data class GearModifier(
             val stringModifiers = mutableMapOf<String, String>()
             val booleanModifiers = mutableMapOf<String, Boolean>()
             val listModifiers = mutableMapOf<String, List<String>>()
-            if (json.has("modifiers")) {
-                val modObj = json.getAsJsonObject("modifiers")
+            if (json.has("components")) {
+                val modObj = json.getAsJsonObject("components")
                 for ((key, value) in modObj.entrySet()) {
                     when {
                         value.isJsonArray -> listModifiers[key] = value.asJsonArray.map { it.asString }
@@ -61,7 +61,8 @@ data class GearModifier(
                     catch (_: IllegalArgumentException) {
                         logger.warn("DataGear: Unknown operation '$it' in '$id', defaulting to ADD")
                         Operation.ADD
-                    } } ?: Operation.ADD,
+                    }
+                } ?: Operation.ADD,
                 priority = json.getIntOrNull("priority") ?: 0,
                 slot = json.getStringOrNull("slot")
             )

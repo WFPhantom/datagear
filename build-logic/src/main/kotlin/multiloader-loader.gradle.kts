@@ -2,6 +2,8 @@ plugins {
     id("multiloader-common")
 }
 
+val commonPath = ":${providers.gradleProperty("mod_id").get()}-common"
+
 configurations {
     create("commonJava") {
         isCanBeResolved = true
@@ -14,13 +16,13 @@ configurations {
 val loaderAttribute = Attribute.of("io.github.mcgradleconventions.loader", String::class.java)
 
 dependencies {
-    compileOnly(project(":common")) {
+    compileOnly(project(commonPath)) {
         attributes {
             attribute(loaderAttribute, "common")
         }
     }
-    add("commonJava", project(path = ":common", configuration = "commonJava"))
-    add("commonResources", project(path = ":common", configuration = "commonResources"))
+    add("commonJava", project(path = commonPath, configuration = "commonJava"))
+    add("commonResources", project(path = commonPath, configuration = "commonResources"))
 }
 
 tasks.named<JavaCompile>("compileJava") {

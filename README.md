@@ -19,7 +19,7 @@ DataGear is meant to be a simple and lightweight solution, and as so it's design
 
 *If you encounter any issues or incompatibilities, please report them [here](https://github.com/wfphantom/datagear/issues).*
 
-Datagear V2 is under development. To see my ever-expanding but never-fulfilled TODO list, click [here](https://github.com/WFPhantom/datagear/blob/fabric-26.1/src/main/kotlin/com/wfphantom/DataGear.kt).
+A rewrite is under development. To see my ever-expanding but never-fulfilled TODO list, click [here](https://github.com/WFPhantom/datagear/blob/fabric-26.1/src/main/kotlin/com/wfphantom/DataGear.kt).
 
 The mod is available for Neoforge and Fabric 26.1+ and MIGHT be backported to 1.21.1 for both loaders. No Forge or 1.20 ports are ever happening.
 

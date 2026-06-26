@@ -3,7 +3,7 @@ plugins {
     id("net.neoforged.moddev")
 }
 
-val neo_form_version: String by project
+val neo_form_version = project.property("neo_form_version") as String
 
 neoForge {
     neoFormVersion = neo_form_version
@@ -13,10 +13,13 @@ neoForge {
 }
 
 dependencies {
-    compileOnly("org.spongepowered:mixin:0.8.5")
-    // fabric and neoforge both bundle mixinextras, so it is safe to use it in common
-    compileOnly("io.github.llamalad7:mixinextras-common:0.5.4")
-    annotationProcessor("io.github.llamalad7:mixinextras-common:0.5.4")
+    // Fabric and NeoForge both bundle Fabric Mixin, so it is safe to use it in common
+    // If you need to update, check what version they are using to see what is compatible
+    // https://github.com/neoforged/NeoForge/blob/26.2.x/gradle.properties#L37
+    // https://github.com/FabricMC/fabric-loader/blob/master/gradle.properties#L12
+    compileOnly("net.fabricmc:sponge-mixin:0.17.3+mixin.0.8.7")
+    // Fabric and NeoForge both bundle MixinExtras, so it is safe to use it in common
+    compileOnly(annotationProcessor("io.github.llamalad7:mixinextras-common:0.5.4")!!)
 }
 
 configurations {

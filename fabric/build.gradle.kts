@@ -19,7 +19,7 @@ loom {
     //        sourceSet(sourceSets.client)
     //    }
     //}
-    val aw = project(":common").file("src/main/resources/${"mod_id"()}.accesswidener")
+    val aw = project(":${"mod_id"()}-common").file("src/main/resources/${"mod_id"()}.accesswidener")
     if (aw.exists()) accessWidenerPath.set(aw)
 }
 // Optional datagen, see https://wiki.fabricmc.net/tutorial:datagen_setup
@@ -31,7 +31,7 @@ loom {
 
 // Implement mcgradleconventions loader attribute
 val loaderAttribute = Attribute.of("io.github.mcgradleconventions.loader", String::class.java)
-listOf("apiElements", "runtimeElements", "sourcesElements", "javadocElements", "includeInternal", "modCompileClasspath").forEach { variant ->
+listOf("apiElements", "runtimeElements", "sourcesElements", "javadocElements", "modCompileClasspath").forEach { variant ->
     configurations.named(variant) {
         attributes {
             attribute(loaderAttribute, "fabric")
@@ -50,5 +50,5 @@ sourceSets.configureEach {
 }
 
 operator fun String.invoke(): String {
-    return project.properties[this] as? String ?: throw IllegalStateException("Property $this is not defined")
+    return providers.gradleProperty(this).orNull ?: throw IllegalStateException("Property $this is not defined")
 }

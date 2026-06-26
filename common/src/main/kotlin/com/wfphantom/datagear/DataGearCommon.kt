@@ -5,7 +5,7 @@ import com.wfphantom.datagear.engine.ModifierEngine
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 
-/* TODO: V2 TODO LIST */
+/* TODO: Rewrite TODO LIST */
 // TODO: Potentially Apply effect (or even just particles, without effects!) - Armors should be able to just apply effects, everything else can maybe do on hit? Armors can maybe also do on being hit? same with shield? what about bow/trident?
 // TODO: Load custom textures, sounds, actions (holy shit fabric does not like actions), and overlays
 // TODO: Allow for adding custom items (/assets/datagear/obsidian and /data/datagear/add/obsidian) (should be simple since we can add add components to anything, just textures and dynamically registering them in creative menu)

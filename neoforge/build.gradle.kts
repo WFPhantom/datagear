@@ -7,7 +7,7 @@ plugins {
 neoForge {
     version = "neoforge_version"()
     // Automatically enable neoforge AccessTransformers if the file exists
-    val at = project(":common").file("src/main/resources/META-INF/accesstransformer.cfg")
+    val at = project(":${"mod_id"()}-common").file("src/main/resources/META-INF/accesstransformer.cfg")
     if (at.exists()) accessTransformers.from(at.absolutePath)
 
     runs {
@@ -96,7 +96,7 @@ sourceSets.configureEach {
 // a dependency that will be present for runtime testing but that is
 // "optional", meaning it will not be pulled by dependents of this mod.
 configurations {
-    val localRuntime by creating
+    val localRuntime = create("localRuntime")
     named("runtimeClasspath") {
         extendsFrom(localRuntime)
     }
@@ -115,5 +115,5 @@ idea {
 }
 
 operator fun String.invoke(): String {
-    return project.properties[this] as? String ?: throw IllegalStateException("Property $this is not defined")
+    return providers.gradleProperty(this).orNull ?: throw IllegalStateException("Property $this is not defined")
 }

@@ -24,6 +24,14 @@ plugins {
 	id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
 }
 
-include("common")
-include("fabric")
-include("neoforge")
+val modId = providers.gradleProperty("mod_id").get()
+
+includeBuild("build-logic")
+include("$modId-common")
+project(":$modId-common").projectDir = file("common")
+
+include("$modId-fabric")
+project(":$modId-fabric").projectDir = file("fabric")
+
+include("$modId-neoforge")
+project(":$modId-neoforge").projectDir = file("neoforge")
